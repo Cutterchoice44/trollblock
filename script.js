@@ -1,4 +1,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
+// Cutters Choice Radio Main Script
+// Includes Device Fingerprinting & Troll Ban Logic (FingerprintJS v3+)
+// Add this in your HTML head before this script:
+// <script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@3/dist/fp.min.js"></script>
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 1) GLOBAL CONFIG & MOBILE DETECTION
 // ─────────────────────────────────────────────────────────────────────────────
 const API_KEY           = "pk_0b8abc6f834b444f949f727e88a728e0";
@@ -7,12 +14,35 @@ const BASE_URL          = "https://api.radiocult.fm/api";
 const FALLBACK_ART      = "https://i.imgur.com/qWOfxOS.png";
 const MIXCLOUD_PASSWORD = "cutters44";
 const isMobile          = /Mobi|Android/i.test(navigator.userAgent);
-
-// Chat popup reference to preserve session
 let chatPopupWindow;
+let visitorId; // for fingerprint ban
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2) HELPERS
+// 2) BAN LOGIC FUNCTIONS
+// ─────────────────────────────────────────────────────────────────────────────
+function blockChat() {
+  document.getElementById('popOutBtn')?.remove();
+  document.getElementById('chatModal')?.remove();
+  const cont = document.getElementById('radiocult-chat-container');
+  if (cont) cont.innerHTML = '<p>Chat disabled.</p>';
+}
+
+async function sendBan() {
+  if (!visitorId) return;
+  try {
+    await fetch('/api/chat/ban', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visitorId })
+    });
+    blockChat();
+  } catch (err) {
+    console.error('Error sending ban:', err);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3) HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 function createGoogleCalLink(title, startUtc, endUtc) {
   if (!startUtc || !endUtc) return "#";
@@ -34,32 +64,24 @@ async function rcFetch(path) {
   return res.json();
 }
 
-// Shuffle mixcloud iframes once per hour (instead of once per day)
 function shuffleIframesDaily() {
   const container = document.getElementById("mixcloud-list");
   if (!container) return;
-
   const HOUR = 60 * 60 * 1000;
   const lastShuffle = parseInt(localStorage.getItem("lastShuffleTime"), 10);
   const now = Date.now();
-
-  // if we've shuffled within the past hour, do nothing
   if (lastShuffle && (now - lastShuffle) < HOUR) return;
-
-  // Fisher–Yates shuffle
   const iframes = Array.from(container.querySelectorAll("iframe"));
   for (let i = iframes.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     container.appendChild(iframes[j]);
     iframes.splice(j, 1);
   }
-
-  // record this shuffle time
   localStorage.setItem("lastShuffleTime", now.toString());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3) MIXCLOUD ARCHIVE PERSISTENCE
+// 4) MIXCLOUD ARCHIVE PERSISTENCE
 // ─────────────────────────────────────────────────────────────────────────────
 async function loadArchives() {
   try {
@@ -68,7 +90,6 @@ async function loadArchives() {
     const archives = await res.json();
     const container = document.getElementById('mixcloud-list');
     container.innerHTML = '';
-
     archives.forEach((entry, idx) => {
       const feed = encodeURIComponent(entry.url);
       const item = document.createElement('div');
@@ -81,28 +102,21 @@ async function loadArchives() {
       iframe.height = '120';
       iframe.frameBorder = '0';
       item.appendChild(iframe);
-
       if (!isMobile) {
         const remove = document.createElement('a');
         remove.href = '#';
         remove.className = 'remove-link';
         remove.textContent = 'Remove show';
-        remove.addEventListener('click', e => {
-          e.preventDefault();
-          deleteMixcloud(idx);
-        });
+        remove.addEventListener('click', e => { e.preventDefault(); deleteMixcloud(idx); });
         item.appendChild(remove);
       }
-
       container.prepend(item);
     });
-
     shuffleIframesDaily();
-
-    const scriptTag = document.createElement('script');
-    scriptTag.src = 'https://widget.mixcloud.com/widget.js';
-    scriptTag.async = true;
-    document.body.appendChild(scriptTag);
+    const s = document.createElement('script');
+    s.src = 'https://widget.mixcloud.com/widget.js';
+    s.async = true;
+    document.body.appendChild(s);
   } catch (err) {
     console.error('Archive load error:', err);
   }
@@ -150,7 +164,7 @@ async function deleteMixcloud(index) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4) DATA FETCHERS (Live, Schedule, Now Playing)
+// 5) DATA FETCHERS (Live, Schedule, Now Playing)
 // ─────────────────────────────────────────────────────────────────────────────
 async function fetchLiveNow() {
   try {
@@ -170,9 +184,10 @@ async function fetchLiveNow() {
 async function fetchWeeklySchedule() {
   const container = document.getElementById('schedule-container');
   if (!container) return;
-  container.innerHTML = '<p>Loading this week\'s schedule…</p>';
+  container.innerHTML = '<p>Loading this week&#39;s schedule…</p>';
   try {
-    const now = new Date(), then = new Date(now.getTime() + 7*24*60*60*1000);
+    const now = new Date();
+    const then = new Date(now.getTime() + 7*24*60*60*1000);
     const { schedules } = await rcFetch(
       `/station/${STATION_ID}/schedule?startDate=${now.toISOString()}&endDate=${then.toISOString()}`
     );
@@ -190,43 +205,27 @@ async function fetchWeeklySchedule() {
     const fmt = iso => new Date(iso)
       .toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
     Object.entries(byDay).forEach(([day, events]) => {
-      const h3 = document.createElement('h3');
-      h3.textContent = day;
-      container.appendChild(h3);
-      const ul = document.createElement('ul');
-      ul.style.listStyle = 'none';
-      ul.style.padding = '0';
+      const h3 = document.createElement('h3'); h3.textContent = day; container.appendChild(h3);
+      const ul = document.createElement('ul'); ul.style.listStyle = 'none'; ul.style.padding = '0';
       events.forEach(ev => {
-        const li = document.createElement('li');
-        li.style.marginBottom = '1rem';
-        const wrap = document.createElement('div');
-        wrap.style.display = 'flex';
-        wrap.style.alignItems = 'center';
-        wrap.style.gap = '8px';
-        const t = document.createElement('strong');
-        t.textContent = `${fmt(ev.startDateUtc)}–${fmt(ev.endDateUtc)}`;
-        wrap.appendChild(t);
+        const li = document.createElement('li'); li.style.marginBottom = '1rem';
+        const wrap = document.createElement('div'); wrap.style.display = 'flex'; wrap.style.alignItems = 'center'; wrap.style.gap = '8px';
+        const t = document.createElement('strong'); t.textContent = `${fmt(ev.startDateUtc)}–${fmt(ev.endDateUtc)}`; wrap.appendChild(t);
         const art = ev.metadata?.artwork?.default || ev.metadata?.artwork?.original;
         if (art) {
           const img = document.createElement('img');
-          img.src = art;
-          img.alt = `${ev.title} artwork`;
-          img.style.cssText = 'width:30px;height:30px;object-fit:cover;border-radius:３px;';
+          img.src = art; img.alt = `${ev.title} artwork`;
+          img.style.cssText = 'width:30px;height:30px;object-fit:cover;border-radius:3px;';
           wrap.appendChild(img);
         }
-        const span = document.createElement('span');
-        span.textContent = ev.title;
-        wrap.appendChild(span);
+        const span = document.createElement('span'); span.textContent = ev.title; wrap.appendChild(span);
         if (!/archive/i.test(ev.title)) {
           const a = document.createElement('a');
           a.href = createGoogleCalLink(ev.title, ev.startDateUtc, ev.endDateUtc);
-          a.target = '_blank';
-          a.innerHTML = '📅';
-          a.style.cssText = 'font-size:1.4rem;text-decoration:none;margin-left:6px;';
+          a.target = '_blank'; a.innerHTML = '📅'; a.style.cssText = 'font-size:1.4rem;text-decoration:none;margin-left:6px;';
           wrap.appendChild(a);
         }
-        li.appendChild(wrap);
-        ul.appendChild(li);
+        li.appendChild(wrap); ul.appendChild(li);
       });
       container.appendChild(ul);
     });
@@ -255,117 +254,88 @@ async function fetchNowPlayingArchive() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5) ADMIN & UI ACTIONS
+// 6) ADMIN & UI ACTIONS
 // ─────────────────────────────────────────────────────────────────────────────
 function openChatPopup() {
   const url = `https://app.radiocult.fm/embed/chat/${STATION_ID}?theme=midnight&primaryColor=%235A8785&corners=sharp`;
   if (isMobile) {
-    const modal    = document.getElementById('chatModal'),
-          iframeEl = document.getElementById('chatModalIframe');
-    if (modal && iframeEl) {
-      if (!iframeEl.src) iframeEl.src = url;
-      modal.style.display = 'flex';
-    }
+    const modal    = document.getElementById('chatModal'), iframeEl = document.getElementById('chatModalIframe');
+    if (modal && iframeEl) { if (!iframeEl.src) iframeEl.src = url; modal.style.display = 'flex'; }
   } else {
-    if (chatPopupWindow && !chatPopupWindow.closed) {
-      chatPopupWindow.focus();
-    } else {
-      chatPopupWindow = window.open(
-        url,
-        'CuttersChatPopup',
-        'width=400,height=700,resizable=yes,scrollbars=yes'
-      );
-    }
+    if (chatPopupWindow && !chatPopupWindow.closed) chatPopupWindow.focus();
+    else chatPopupWindow = window.open(url, 'CuttersChatPopup', 'width=400,height=700,resizable=yes,scrollbars=yes');
   }
 }
 
 function closeChatModal() {
-  const modal    = document.getElementById('chatModal'),
-        iframeEl = document.getElementById('chatModalIframe');
-  if (modal && iframeEl) {
-    modal.style.display = 'none';
-    // do NOT clear iframeEl.src to preserve session
-  }
+  const modal    = document.getElementById('chatModal'), iframeEl = document.getElementById('chatModalIframe');
+  if (modal && iframeEl) modal.style.display = 'none';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 6) INITIALIZATION
+// 7) INITIALIZATION
 // ─────────────────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  // Run ban check first
+  if (window.FingerprintJS) {
+    try {
+      const fp = await FingerprintJS.load();
+      const result = await fp.get();
+      visitorId = result.visitorId;
+      const res = await fetch('/api/chat/checkban', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ visitorId })
+      });
+      if ((await res.json()).banned) {
+        blockChat();
+      }
+    } catch (err) {
+      console.warn('Ban check failed:', err);
+    }
+  }
+
+  // Core inits
   fetchLiveNow();
   fetchWeeklySchedule();
   fetchNowPlayingArchive();
   loadArchives();
-
-  setInterval(fetchLiveNow, 30000);
+  setInterval(fetchLiveNow,           30000);
   setInterval(fetchNowPlayingArchive, 30000);
 
+  // Mixcloud embed
   if (isMobile) {
     document.querySelector('.mixcloud')?.remove();
   } else {
-    document.querySelectorAll('iframe.mixcloud-iframe').forEach(ifr => {
-      ifr.src = ifr.src || ifr.dataset.src;
-    });
+    document.querySelectorAll('iframe.mixcloud-iframe')
+      .forEach(ifr => ifr.src = ifr.src || ifr.dataset.src);
     shuffleIframesDaily();
-    const s = document.createElement('script');
-    s.src = 'https://widget.mixcloud.com/widget.js';
-    s.async = true;
+    const s = document.createElement('script'); s.src = 'https://widget.mixcloud.com/widget.js'; s.async = true;
     document.body.appendChild(s);
   }
 
-  document.getElementById('popOutBtn')?.addEventListener('click', () => {
-    const src = document.getElementById('inlinePlayer').src;
-    const w = window.open('', 'CCRPlayer', 'width=400,height=200,resizable=yes');
-    w.document.write(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Cutters Choice Player</title><style>body{margin:0;background:#111;display:flex;align-items:center;justify-content:center;height:100vh;}iframe{width:100%;height:180px;border:none;border-radius:4px;}}</style></head><body><iframe src="${src}" allow="autoplay"></iframe></body></html>`);
-    w.document.close();
-  });
+  document.getElementById('popOutBtn')?.addEventListener('click', () => openChatPopup());
 
-  const ul = document.querySelector('.rc-user-list');
-  if (ul) {
-    new MutationObserver(() => {
-      Array.from(ul.children).forEach(li => {
-        if (!li.textContent.trim()) li.remove();
-      });
-    }).observe(ul, { childList: true });
-  }
+  new MutationObserver(() => {
+    Array.from(document.querySelectorAll('.rc-user-list li')).forEach(li => {
+      if (!li.textContent.trim()) li.remove();
+    });
+  }).observe(document.querySelector('.rc-user-list'), { childList: true, subtree: true });
 
-  // ────────────────────────────────────────────────────────────────────────────
-  // 7) BANNER GIF SEQUENCE (axes then scissors)
-  // ────────────────────────────────────────────────────────────────────────────
+  // Banner GIF sequence
   const rightEl = document.querySelector('.header-gif-right');
   const leftEl  = document.querySelector('.header-gif-left');
   if (rightEl && leftEl) {
     const sets = [
-      {
-        right: 'https://cutterschoiceradio.com/Untitled%20design(4).gif',
-        left:  'https://cutterschoiceradio.com/Untitled%20design(5).gif'
-      },
-      {
-        right: 'https://cutterschoiceradio.com/Untitled%20design(7).gif',
-        left:  'https://cutterschoiceradio.com/Untitled%20design(8).gif'
-      }
+      { right: 'https://cutterschoiceradio.com/Untitled%20design(4).gif', left: 'https://cutterschoiceradio.com/Untitled%20design(5).gif' },
+      { right: 'https://cutterschoiceradio.com/Untitled%20design(7).gif', left: 'https://cutterschoiceradio.com/Untitled%20design(8).gif' }
     ];
-
-    let current = 0;      // which set we’re on (0 = axes, 1 = scissors)
-    let sweepCount = 0;   // how many full sweeps we’ve done in this set
-
-    // helper to apply both backgrounds
-    function applySet(idx) {
-      rightEl.style.backgroundImage = `url('${sets[idx].right}')`;
-      leftEl.style.backgroundImage  = `url('${sets[idx].left}')`;
+    let current = 0, sweepCount = 0;
+    function applySet(i) {
+      rightEl.style.backgroundImage = `url('${sets[i].right}')`;
+      leftEl.style.backgroundImage  = `url('${sets[i].left}')`;
     }
-
-    // initial
     applySet(current);
-
-    // figure out interval from your CSS var --gif-speed
-    const speedStr = getComputedStyle(document.documentElement)
-                       .getPropertyValue('--gif-speed').trim();
-    // parse "12s" → 12, fallback 12
-    const speedSec = parseFloat(speedStr.replace('s','')) || 12;
-    const intervalMs = speedSec * 1000;
-
-    // every full sweep, count and maybe swap
+    const speedSec = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--gif-speed')) || 12;
     setInterval(() => {
       sweepCount++;
       if (sweepCount >= 2) {
@@ -373,6 +343,6 @@ document.addEventListener('DOMContentLoaded', () => {
         applySet(current);
         sweepCount = 0;
       }
-    }, intervalMs);
+    }, speedSec * 1000);
   }
 });
